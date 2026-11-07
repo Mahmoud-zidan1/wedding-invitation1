@@ -32,7 +32,7 @@ const INVITE_SETTINGS = {
   songUrl: 'song.mp3',
 
   // 4) سرعة نزول الصفحة تلقائياً: كلما زاد الرقم زادت السرعة.
-  pageScrollSpeed: 200,
+  pageScrollSpeed: 150,
 
   // 5) قاعدة البيانات المشتركة لرسائل الضيوف (Firebase).
   // انسخ firebaseConfig من Firebase Console واستبدل القيم الأربع أدناه.
@@ -248,6 +248,8 @@ const INVITE_SETTINGS = {
 .music:active{transform:scale(.94)}
 @keyframes musicGlow{50%{box-shadow:0 0 0 10px rgba(36,89,139,.08),0 6px 24px #122f5360}}
 @media(prefers-reduced-motion:reduce){.music.is-playing{animation:none}}
+/* iOS/Safari: scripted vertical scrolling must not inherit CSS smooth-scroll easing. */
+html.page-auto-scroll-running { scroll-behavior: auto !important; }
 /* Discreet control for automatic vertical page scrolling */
 .page-scroll-control{
   position:fixed;bottom:22px;left:19px;z-index:50;
@@ -475,81 +477,105 @@ if(WEDDING.music){
 }
 
 
-// Gentle automatic scroll down the *whole invitation* after clicking Open.
-// The left floating button pauses/resumes it. Any manual wheel, touch or arrow
-// scrolling pauses it so visitors can read or fill the form comfortably.
-let pageScrollFrame=null;
-let pageScrollDelay=null;
-let pageScrollPreviousTime=0;
-let isPageAutoScrolling=false;
-const pageScrollControl=$('pageScrollControl');
-const pageScrollAllowedMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
+// Smooth, frame-rate-independent auto scroll for Android, iOS Safari & desktop.
+// Only the VERTICAL PAGE scroll is changed. The 3D gallery is untouched.
+let pageScrollFrame = null;
+let pageScrollDelay = null;
+let pageScrollStartTime = 0;
+let pageScrollStartY = 0;
+let isPageAutoScrolling = false;
+const pageScrollControl = $('pageScrollControl');
+const pageScrollAllowedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+const pageScrollRoot = document.scrollingElement || document.documentElement;
+
 function updatePageScrollControl(){
-  pageScrollControl.textContent=isPageAutoScrolling?'Ⅱ':'↓';
-  pageScrollControl.setAttribute('aria-pressed',isPageAutoScrolling?'true':'false');
-  pageScrollControl.setAttribute('aria-label',isPageAutoScrolling?'Pause automatic page scrolling':'Resume automatic page scrolling');
-  pageScrollControl.title=isPageAutoScrolling?'Pause auto scroll':'Resume auto scroll';
+  pageScrollControl.textContent = isPageAutoScrolling ? 'Ⅱ' : '↓';
+  pageScrollControl.setAttribute('aria-pressed', isPageAutoScrolling ? 'true' : 'false');
+  pageScrollControl.setAttribute('aria-label', isPageAutoScrolling ?
+    'Pause automatic page scrolling' : 'Resume automatic page scrolling');
+  pageScrollControl.title = isPageAutoScrolling ? 'Pause auto scroll' : 'Resume auto scroll';
 }
 function stopPageAutoScroll(){
   clearTimeout(pageScrollDelay);
-  pageScrollDelay=null;
-  if(pageScrollFrame!==null)cancelAnimationFrame(pageScrollFrame);
-  pageScrollFrame=null;
-  pageScrollPreviousTime=0;
-  isPageAutoScrolling=false;
+  pageScrollDelay = null;
+  if(pageScrollFrame !== null) cancelAnimationFrame(pageScrollFrame);
+  pageScrollFrame = null;
+  pageScrollStartTime = 0;
+  isPageAutoScrolling = false;
+  document.documentElement.classList.remove('page-auto-scroll-running');
   updatePageScrollControl();
 }
 function pageScrollStep(time){
-  if(!isPageAutoScrolling)return;
-  if(document.hidden){pageScrollPreviousTime=0;pageScrollFrame=requestAnimationFrame(pageScrollStep);return}
-  const dt=pageScrollPreviousTime?Math.min((time-pageScrollPreviousTime)/1000,.1):0;
-  pageScrollPreviousTime=time;
-  const maxY=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);
-  if(window.scrollY>=maxY-1){stopPageAutoScroll();return}
-  // "instant" avoids global html{scroll-behavior:smooth} fighting each animation frame.
-  window.scrollTo({top:Math.min(maxY,window.scrollY+WEDDING.pageAutoScrollSpeed*dt),behavior:'instant'});
-  pageScrollFrame=requestAnimationFrame(pageScrollStep);
+  if(!isPageAutoScrolling) return;
+  if(document.hidden){
+    // On iOS, reset the clock when Safari backgrounds the tab to avoid jumps.
+    pageScrollStartTime = 0;
+    pageScrollFrame = requestAnimationFrame(pageScrollStep);
+    return;
+  }
+  if(!pageScrollStartTime){
+    pageScrollStartTime = time;
+    pageScrollStartY = pageScrollRoot.scrollTop;
+  }
+  // Absolute time-based position: a dropped frame won't slow down the scroll.
+  const elapsedSeconds = Math.max(0, (time - pageScrollStartTime) / 1000);
+  const maxY = Math.max(0, pageScrollRoot.scrollHeight - pageScrollRoot.clientHeight);
+  const targetY = Math.min(maxY, pageScrollStartY + WEDDING.pageAutoScrollSpeed * elapsedSeconds);
+  // This is an immediate scrollTop write. CSS smooth scrolling is disabled ONLY
+  // while auto scrolling (see html.page-auto-scroll-running above).
+  pageScrollRoot.scrollTop = targetY;
+  if(targetY >= maxY && pageScrollRoot.scrollTop >= maxY - 2){
+    stopPageAutoScroll();
+    return;
+  }
+  pageScrollFrame = requestAnimationFrame(pageScrollStep);
 }
 function beginPageAutoScroll(){
-  if(pageScrollAllowedMotion.matches || !$('cover').classList.contains('closed'))return;
+  if(pageScrollAllowedMotion.matches || !$('cover').classList.contains('closed')) return;
   clearTimeout(pageScrollDelay);
-  pageScrollDelay=null;
-  if(pageScrollFrame!==null)cancelAnimationFrame(pageScrollFrame);
-  isPageAutoScrolling=true;
-  pageScrollPreviousTime=0;
-  pageScrollControl.hidden=false;
+  pageScrollDelay = null;
+  if(pageScrollFrame !== null) cancelAnimationFrame(pageScrollFrame);
+  isPageAutoScrolling = true;
+  document.documentElement.classList.add('page-auto-scroll-running');
+  const maxY = Math.max(0, pageScrollRoot.scrollHeight - pageScrollRoot.clientHeight);
+  if(pageScrollRoot.scrollTop >= maxY - 2) pageScrollRoot.scrollTop = 0;
+  pageScrollStartY = pageScrollRoot.scrollTop;
+  pageScrollStartTime = 0;
+  pageScrollControl.hidden = false;
   updatePageScrollControl();
-  pageScrollFrame=requestAnimationFrame(pageScrollStep);
+  pageScrollFrame = requestAnimationFrame(pageScrollStep);
 }
 function startPageAutoScrollAfterOpen(){
-  if(pageScrollAllowedMotion.matches)return;
-  pageScrollControl.hidden=false;
+  if(pageScrollAllowedMotion.matches) return;
+  pageScrollControl.hidden = false;
   updatePageScrollControl();
   clearTimeout(pageScrollDelay);
-  pageScrollDelay=setTimeout(beginPageAutoScroll,WEDDING.pageAutoScrollStartDelayMs);
+  pageScrollDelay = setTimeout(beginPageAutoScroll, WEDDING.pageAutoScrollStartDelayMs);
 }
-pageScrollControl.addEventListener('click',()=>{
-  if(isPageAutoScrolling || pageScrollDelay!==null){stopPageAutoScroll();return}
-  const maxY=Math.max(0,document.documentElement.scrollHeight-window.innerHeight);
-  if(window.scrollY>=maxY-1)window.scrollTo({top:0,behavior:'instant'});
-  beginPageAutoScroll();
+pageScrollControl.addEventListener('click', () => {
+  if(isPageAutoScrolling || pageScrollDelay !== null) stopPageAutoScroll();
+  else beginPageAutoScroll();
 });
-// Distinguish user interaction from our own scripted scroll.
-window.addEventListener('wheel',()=>{if(isPageAutoScrolling||pageScrollDelay!==null)stopPageAutoScroll()},{passive:true});
-window.addEventListener('touchstart',()=>{if(isPageAutoScrolling||pageScrollDelay!==null)stopPageAutoScroll()},{passive:true});
-window.addEventListener('keydown',e=>{
+// Manual interaction pauses automatic page scrolling; visitors keep full control.
+window.addEventListener('wheel', () => {
+  if(isPageAutoScrolling || pageScrollDelay !== null) stopPageAutoScroll();
+}, {passive:true});
+window.addEventListener('touchstart', () => {
+  if(isPageAutoScrolling || pageScrollDelay !== null) stopPageAutoScroll();
+}, {passive:true});
+window.addEventListener('keydown', e => {
   if(['ArrowDown','ArrowUp','PageDown','PageUp','Home','End',' '].includes(e.key) &&
-     (isPageAutoScrolling||pageScrollDelay!==null))stopPageAutoScroll();
+    (isPageAutoScrolling || pageScrollDelay !== null)) stopPageAutoScroll();
 });
-// Do not scroll visitors away while they interact with buttons, links, or forms.
-document.addEventListener('pointerdown',e=>{
-  if(e.target.closest('#pageScrollControl,#openBtn'))return;
-  if(isPageAutoScrolling||pageScrollDelay!==null)stopPageAutoScroll();
+document.addEventListener('pointerdown', e => {
+  if(e.target.closest('#pageScrollControl,#openBtn')) return;
+  if(isPageAutoScrolling || pageScrollDelay !== null) stopPageAutoScroll();
 });
 if(pageScrollAllowedMotion.addEventListener){
-  pageScrollAllowedMotion.addEventListener('change',()=>{if(pageScrollAllowedMotion.matches)stopPageAutoScroll()});
+  pageScrollAllowedMotion.addEventListener('change', () => {
+    if(pageScrollAllowedMotion.matches) stopPageAutoScroll();
+  });
 }
-
 </script>
 <script type="module">
 // ===== SHARED GUESTBOOK: Firebase Cloud Firestore =====
